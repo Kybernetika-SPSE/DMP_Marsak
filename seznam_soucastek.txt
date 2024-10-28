@@ -1,0 +1,7 @@
+1. kostra kalkulačky v 3D tisku
+2. vlastní tlačítka v 3D tisku (6x6)
+3. displej: OPEN-SMART 2,4" LCD displej 128x64 ST7565 (https://www.laskakit.cz/open-smart-2-6--lcd-displej-128x64-st7567/?utm_source=google&utm_medium=cpc&utm_campaign=1_PLA_All_ROAS_%5BCZ%5D&utm_id=1371265813&gad_source=1&gclid=Cj0KCQjwgL-3BhDnARIsAL6KZ6_VeqIvBG6GoJEIYB4Eu1_4IxsYaVhCIp4Zxhu_pTva__hDd-DS7WUaAgtKEALw_wcB#relatedFiles)
+4. mikroprocesor: Raspberry Pi Pico (https://rpishop.cz/raspberry-pi-pico/5074-raspberry-pi-pico-wh.html?_gl=1*k2uj9e*_up*MQ..&gclid=Cj0KCQjwgL-3BhDnARIsAL6KZ69U8DIYvOII9BWNqof-jznxGdfrfO7bL4a7Ju-rTUAAt_i7Z8r1jicaAlTUEALw_wcB#tab-description)
+5. USB-C adapter: Nabíječka Li-ion článku TP4056 s ochranou USB-C (https://www.laskakit.cz/nabijecka-li-ion-clanku-tp4056-s-ochranou-usb-c/?utm_source=google&utm_medium=cpc&utm_campaign=1_PMax_%5BCZ%5D%20Top&utm_id=18587021915&gad_source=1&gclid=Cj0KCQjwgL-3BhDnARIsAL6KZ6-4YBUMPCAVJeZDEkikEYuN8G8ZgzzKN39W1ZasDCjaUiHRCqZ-rIsaAoP0EALw_wcB)
+6. batekra: GeB LiPol Baterie 604050 1500mAh 3.7V JST-PH 2.0 (https://www.laskakit.cz/baterie-li-po-3-7v-1500mah-lipo/)
+7. vlastní PCB:

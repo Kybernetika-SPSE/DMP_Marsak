@@ -1,0 +1,10 @@
+✔
+1. čísla
+2. násobení,dělení,sčítání,odečítání
+3. šipky
+4. lomené výrazy
+5. mocniny a odmocniny
+6. cos,sin,tan,log
+7. výpočet
+8. ON/OFF, ALPHA, FN, AC, DELET
+9. Grafy
