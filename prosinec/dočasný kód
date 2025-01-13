@@ -1,0 +1,113 @@
+from machine import Pin, SPI
+import time
+
+# Pin definitions
+CS_PIN = 4
+RES_PIN = 5
+A0_PIN = 7  # Libovolný GPIO pin
+SCK_PIN = 2
+MOSI_PIN = 3  # Opraveno na kompatibilní pin pro SPI0
+
+# SPI initialization
+spi = SPI(0, baudrate=1000000, polarity=0, phase=0, sck=Pin(SCK_PIN), mosi=Pin(MOSI_PIN))
+cs = Pin(CS_PIN, Pin.OUT)
+res = Pin(RES_PIN, Pin.OUT)
+a0 = Pin(A0_PIN, Pin.OUT)
+
+# ST7565 commands
+CMD_DISPLAY_OFF = 0xAE
+CMD_DISPLAY_ON = 0xAF
+CMD_SET_PAGE = 0xB0
+CMD_SET_COLUMN_UPPER = 0x10
+CMD_SET_COLUMN_LOWER = 0x00
+
+# Send command to ST7565
+def send_command(cmd):
+    a0.value(0)  # Command mode
+    cs.value(0)
+    spi.write(bytearray([cmd]))
+    cs.value(1)
+
+# Send data to ST7565
+def send_data(data):
+    a0.value(1)  # Data mode
+    cs.value(0)
+    spi.write(bytearray([data]))
+    cs.value(1)
+
+# Initialize the display
+def init_display():
+    res.value(0)
+    time.sleep(0)  # Zvýšit na 500ms
+    res.value(1)
+    time.sleep(0)
+    send_command(0xE2)  # Software reset
+    send_command(0xA3)  # Bias 1/9
+    send_command(0xA0)  # Reverse SEG (Reverse SEG vypnuto)
+    send_command(0xC8)  # Normal COM output (otočení vertikálně)
+    send_command(0xA6)  # Normal display
+    send_command(0x2F)  # Power control: booster, regulator, follower ON
+    send_command(0x81)  # Set contrast command
+    send_command(0x0F)  # Maximum contrast level
+    send_command(0xAF)  # Display ON
+
+# Clear the display
+def clear_display():
+    for page in range(8):  # ST7565 has 8 pages
+        send_command(CMD_SET_PAGE | page)
+        send_command(CMD_SET_COLUMN_UPPER)
+        send_command(CMD_SET_COLUMN_LOWER)
+        for _ in range(128):  # ST7565 width is 128 pixels
+            send_data(0x00)
+
+# Write text to display
+def write_text(page, text):
+    send_command(CMD_SET_PAGE | page)
+    send_command(CMD_SET_COLUMN_UPPER)
+    send_command(CMD_SET_COLUMN_LOWER)
+    for char in text:
+        char_data = font.get(char, [0x00]*5)  # Get character data or blank
+        for byte in char_data:
+            send_data(byte)
+        send_data(0x00)  # Space between characters
+
+# Pismena (dictionary for ASCII characters)
+font = {
+    'A': [0x7E, 0x7E, 0x11, 0x11, 0x7E, 0x7E],
+    'B': [0x7F, 0x49, 0x49, 0x49, 0x36, 0x36],
+    'C': [0x3E, 0x3E, 0x41, 0x41, 0x22, 0x22],
+    'D': [0x7F, 0x49, 0x49, 0x49, 0x3E, 0x3E],
+    'E': [0x7F, 0x49, 0x49, 0x49, 0x41, 0x41],
+    'F': [0x7F, 0x49, 0x48, 0x48, 0x40, 0x40],
+    'G': [0x3E, 0x3E, 0x41, 0x49, 0x2E, 0x2E],
+    'H': [0x7F, 0x7F, 0x08, 0x08, 0x7F, 0x7F],
+    'I': [0x41, 0x41, 0x7F, 0x7F, 0x41, 0x41],
+    'J': [0x20, 0x20, 0x40, 0x40, 0x3F, 0x3F],
+    'K': [0x7F, 0x7F, 0x08, 0x14, 0x63, 0x63],
+    'L': [0x7F, 0x7F, 0x40, 0x40, 0x40, 0x40],
+    'M': [0x7F, 0x7F, 0x20, 0x10, 0x20, 0x7F],
+    'N': [0x7F, 0x7F, 0x10, 0x20, 0x7F, 0x7F],
+    'O': [0x3E, 0x3E, 0x41, 0x41, 0x3E, 0x3E],
+    'P': [0x7F, 0x7F, 0x11, 0x11, 0x0E, 0x0E],
+    'Q': [0x3E, 0x3E, 0x41, 0x41, 0x5E, 0x5E],
+    'R': [0x7F, 0x7F, 0x11, 0x11, 0x6E, 0x6E],
+    'S': [0x2E, 0x2E, 0x49, 0x49, 0x32, 0x32],
+    'T': [0x01, 0x01, 0x7F, 0x7F, 0x01, 0x01],
+    'U': [0x3F, 0x3F, 0x40, 0x40, 0x3F, 0x3F],
+    'V': [0x1F, 0x1F, 0x20, 0x40, 0x20, 0x1F],
+    'W': [0x3F, 0x3F, 0x40, 0x30, 0x40, 0x3F],
+    'X': [0x63, 0x63, 0x14, 0x14, 0x63, 0x63],
+    'Y': [0x07, 0x07, 0x08, 0x70, 0x08, 0x07],
+    'Z': [0x61, 0x61, 0x51, 0x51, 0x47, 0x47],
+    ' ': [0x00, 0x00, 0x00, 0x00, 0x00, 0x00],  # Space
+}
+
+#test komunikace
+#print("SPI Test")
+#spi.write(bytearray([0xAA]))
+#print("SPI Communication OK")
+
+# Main program
+init_display()
+clear_display()
+write_text(0, "ABCDEFGHIJKLMNOPQRSTUVWXYZ")  # Write on page 0
