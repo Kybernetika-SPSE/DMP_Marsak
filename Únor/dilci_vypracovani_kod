@@ -1,0 +1,119 @@
+//Kód pro zobrazování na displeji
+//____________________________________________________________________________-
+#include <Arduino.h>
+#include <U8g2lib.h>
+
+// Definice pinů
+#define ST7565_CLK   2
+#define ST7565_DATA  3
+#define ST7565_CS    4
+#define ST7565_DC    7
+#define ST7565_RESET 5
+
+// Inicializace displeje
+U8G2_ST7565_64128N_F_4W_SW_SPI display(U8G2_R0, ST7565_CLK, ST7565_DATA, ST7565_CS, ST7565_DC, ST7565_RESET);
+
+void setup() {
+    // Inicializace sériové komunikace
+    Serial.begin(115200);
+    Serial.println("Inicializace displeje ST7565...");
+    
+    // Inicializace displeje
+    display.begin();
+    display.sendF("c", 0xE2); // Software reset
+    display.sendF("c", 0xA3); // Bias 1/9
+    display.sendF("c", 0xA0); // Reverse SEG (Reverse SEG vypnuto)
+    display.sendF("c", 0xC8); // Normal COM output (otočení vertikálně)
+    display.sendF("c", 0xA6); // Normal display
+    display.sendF("c", 0x2F); // Power control: booster, regulator, follower ON
+    display.sendF("c", 0x81); // Set contrast command
+    display.sendF("c", 0x0F); // Maximum contrast level
+    display.sendF("c", 0xAF); // Display ON
+    
+    display.clearBuffer();
+    display.setFont(u8g2_font_ncenB08_tr);
+    display.drawStr(0, 10, "ST7565 OK");
+    display.sendBuffer();
+}
+
+void loop() {
+    // Není potřeba smyčka
+}
+
+void clearDisplay() {
+    display.clearBuffer();
+    display.sendBuffer();
+}
+
+void writeText(uint8_t page, const char* text) {
+    display.clearBuffer();
+    display.setFont(u8g2_font_ncenB08_tr);
+    display.drawStr(0, page * 10 + 10, text);
+    display.sendBuffer();
+}
+//_______________________________________________________________________
+
+//kod pro klavesnicovy matrix
+//_______________________________________________________________________
+// Definice pinů
+const int rowPins[] = {18, 19, 20, 21, 22, 23, 24, 25};  // GPIO pro řádky
+const int colPins[] = {12, 11, 10, 9, 8};  // GPIO pro sloupce
+
+// Ukládání stavu tlačítek
+bool buttonState[5][8];  // 5 sloupců x 8 řádků
+
+void setup() {
+  // Inicializace řádků jako vstupy s pull-up rezistory
+  for (int i = 0; i < 8; i++) {
+    pinMode(rowPins[i], INPUT_PULLUP);
+  }
+
+  // Inicializace sloupců jako výstupy
+  for (int i = 0; i < 5; i++) {
+    pinMode(colPins[i], OUTPUT);
+    digitalWrite(colPins[i], HIGH);  // Nastavíme sloupce na HIGH (neaktivní)
+  }
+
+  Serial.begin(9600);  // Pro ladění a výstup na sériový monitor
+}
+
+void loop() {
+  // Skenování maticí tlačítek
+  scanMatrix();
+
+  // Vypisování stavu tlačítek na sériový monitor
+  printMatrix();
+
+  delay(100);  // Krátká prodleva pro debounce
+}
+
+// Funkce pro skenování maticí tlačítek
+void scanMatrix() {
+  // Pro každý sloupec nastavíme sloupec na LOW a čteme řádky
+  for (int col = 0; col < 5; col++) {
+    // Všechny sloupce nastavíme na HIGH
+    for (int i = 0; i < 5; i++) {
+      digitalWrite(colPins[i], HIGH);
+    }
+
+    // Nastavíme aktuální sloupec na LOW
+    digitalWrite(colPins[col], LOW);
+
+    // Čteme každý řádek
+    for (int row = 0; row < 8; row++) {
+      // Tlačítko je stisknuté, pokud je řádek LOW (používáme interní pull-up)
+      buttonState[col][row] = digitalRead(rowPins[row]) == LOW;
+    }
+  }
+}
+
+// Funkce pro tisknutí stavu tlačítek na sériový monitor
+void printMatrix() {
+  for (int row = 0; row < 8; row++) {
+    for (int col = 0; col < 5; col++) {
+      Serial.print(buttonState[col][row] ? "1" : "0");
+      Serial.print(" ");
+    }
+    Serial.println();
+  }
+}
