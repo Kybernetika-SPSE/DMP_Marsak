@@ -1,0 +1,2263 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+
+// Definice pinů pro klávesnici
+const int rowPins[] = {18, 19, 20, 21, 22, 23, 24, 25};  // GPIO pro řádky
+const int colPins[] = {12, 11, 10, 9, 8};  // GPIO pro sloupce
+
+// Mapa klávesnice
+const char* keyMap[8][5] = {
+  {"BACK",   "GPH",      "UP",       "OFF",     "ON"},
+  {"FN",     "LEFT",     "OK",       "RIGHT",   "AC"},
+  {"DEGREE", "S&D",      "DOWN",     "SQRT",    "atan("},
+  {"(",      ")",        "FRACTION", "POW",     "tan("},
+  {"7",      "8",        "9",        "/",       "acos("},
+  {"4",      "5",        "6",        "*",       "cos("},
+  {"1",      "2",        "3",        "-",       "asin("},
+  {"0",      ".",        "=",        "+",       "sin("}
+};
+
+// Přidání druhé alternativní klávesnice
+const char* altKeyMap[8][5] = {
+  {"pi",     "e",       "UP",       "OFF",     "ON"},
+  {"FN",     "LEFT",    "OK",       "RIGHT",   "AC"},
+  {"DEGREE", "x12",     "DOWN",     "log(",     "atan("},
+  {"(",      ")",       "FRACTION", "ln(",      "tan("},
+  {"7",      "8",       "9",        "/",       "acos("},
+  {"4",      "5",       "6",        "*",       "cos("},
+  {"1",      "2",       "3",        "-",       "asin("},
+  {"0",      ".",       "=",        "+",       "sin("}
+};
+
+// Přidání stavu FN klávesy
+bool fnModeActive = false;
+
+// Proměnná pro sledování stavu (zapnuto/vypnuto)
+bool isPowerOn = true;
+
+bool isRadianMode = false;  // Výchozí nastavení je stupně
+
+// Proměnné pro režim zlomku
+bool fractionMode = false;
+String numerator = "";
+String denominator = "";
+int fractionCursorPosition = 0;  // 0 pro čitatel, 1 pro jmenovatel
+int numeratorCursorPos = 0;
+int denominatorCursorPos = 0;
+
+// Proměnná pro uchování výrazu
+String expression = "";
+
+// Nová proměnná pro uchovávání původního čísla před konverzí na vědecké číslo
+String originalNumber = "";
+// Nová proměnná pro sledování, zda jsme ve vědeckém formátu nebo ne
+bool isScientificMode = false;
+
+// Pozice kurzoru
+int cursorPosition = 0;
+unsigned long cursorBlinkTime = 0;
+bool cursorVisible = true;
+const int CURSOR_BLINK_INTERVAL = 500; // ms
+
+// Proměnné pro scrollování textu
+int displayScrollOffset = 0;
+const int DISPLAY_WIDTH = 128; // Šířka displeje v pixelech
+const int TEXT_MARGIN = 4;     // Okraj pro text (aby nebyl těsně u hrany)
+const int SCROLL_INDICATOR_HEIGHT = 5; // Výška indikátoru scrollu v pixelech
+const int SCROLL_INDICATOR_WIDTH = 5;  // Šířka indikátoru scrollu v pixelech
+
+// Proměnná pro sledování stavu chyby dělení nulou
+bool divisionByZeroError = false;
+
+// Nová proměnná pro sledování stavu velkého výsledku
+bool largeResultError = false;
+
+// Maximální délka výrazu
+const int MAX_EXPRESSION_LENGTH = 16;
+
+// Proměnné pro kvadratickou rovnici
+bool quadraticMode = false;
+int quadraticStep = 0; // 0 = zadávání a, 1 = zadávání b, 2 = zadávání c
+String coefA = "";
+String coefB = "";
+String coefC = "";
+String quadraticResult = ""; // Výsledek pro zobrazení
+bool twoLineResult = false; // Indikátor, že výsledek má dvě řádky
+
+// Proměnná pro sledování formátu zobrazení úhlu
+bool showDMS = false;
+
+// Proměnná pro sledování, zda je výsledek z trigonometrické funkce
+bool trigResultActive = false;
+double lastTrigResult = 0.0;
+
+bool symbolError = false;  // Příznak, zda je aktivní chyba prázdného symbolu
+
+// Deklarace nových funkcí pro práci s matematickými symboly
+String replaceMathSymbols(const String &expr, int cursorPos, int &newCursorPos);
+double calculateSqrt(double value);
+double calculateSquared(double value);
+
+// Definice pinů pro displej ST7565
+#define ST7565_CLK   2
+#define ST7565_DATA  3
+#define ST7565_CS    4
+#define ST7565_DC    7
+#define ST7565_RESET 5
+
+// Inicializace displeje
+U8G2_ST7565_64128N_F_4W_SW_SPI display(U8G2_R0, ST7565_CLK, ST7565_DATA, ST7565_CS, ST7565_DC, ST7565_RESET);
+
+// Deklarace funkcí
+void calculateScrollOffset();
+void updateDisplay();
+void drawLeftScrollIndicator();
+void scan_keypad();
+void process_key(const char* key);
+void insertAtCursor(const char* text);
+void insertIntoFraction(const char* text);
+void calculate_result();
+double eval(String expr);
+double operate(double a, double b, char op);
+String formatLargeNumber(double number);
+bool isNumericExpression(String expr);
+void calculateQuadratic();
+void drawDMSResult(const String &dmsText);
+void getDMSComponents(double decimalDegrees, int &degrees, int &minutes, int &seconds, bool &isNegative);
+String convertToDMS(double decimalDegrees);
+void drawSquareRootSymbol(int x, int y, int height);
+int getSquareRootSymbolWidth(int height);
+void drawSquaredSymbol(int x, int y, int height);
+int getSquaredSymbolWidth(int height);
+String replaceMathSymbols(const String &expr, int cursorPos, int &newCursorPos);
+double calculateSqrt(double value);
+double calculateSquared(double value);
+bool tryDeleteCompleteExpression(String &expr, int &cursorPos);
+void processMathFunctions(String &expr);
+bool isOperator(char c);
+bool hasEmptyMathSymbol(const String &expr);
+
+// Inicializace zařízení a nastavení LCD displeje
+void setup() {
+  isPowerOn = true;
+  fnModeActive = false;
+  cursorBlinkTime = millis();
+  
+  Serial.begin(115200);
+  while (!Serial);
+  
+  // Inicializace displeje
+  display.begin();
+  display.sendF("c", 0xE2); // Software reset
+  display.sendF("c", 0xA3); // Bias 1/9
+  display.sendF("c", 0xA0); // Reverse SEG (Reverse SEG vypnuto)
+  display.sendF("c", 0xC8); // Normal COM output (otočení vertikálně)
+  display.sendF("c", 0xA6); // Normal display
+  display.sendF("c", 0x2F); // Power control: booster, regulator, follower ON
+  display.sendF("c", 0x81); // Set contrast command
+  display.sendF("c", 0x0F); // Maximum contrast level
+  display.sendF("c", 0xAF); // Display ON
+
+  // Inicializace sloupců jako výstupy
+  for (int i = 0; i < 5; i++) {
+    pinMode(colPins[i], OUTPUT);
+    digitalWrite(colPins[i], HIGH);
+  }
+
+  // Inicializace řádků jako vstupy s pull-up odporem
+  for (int i = 0; i < 8; i++) {
+    pinMode(rowPins[i], INPUT_PULLUP);
+  }
+
+  display.clearBuffer();
+  display.sendBuffer();
+  
+  cursorBlinkTime = millis();
+}
+
+// Funkce pro kontrolu, zda je výraz pouze číslo (bez operátorů)
+bool isNumericExpression(String expr) {
+  bool isNumeric = true;
+  for (int i = 0; i < expr.length(); i++) {
+    char c = expr.charAt(i);
+    if (!(isdigit(c) || c == '.' || (i == 0 && c == '-'))) {
+      isNumeric = false;
+      break;
+    }
+  }
+  return isNumeric;
+}
+
+// Hlavní smyčka programu - obsluhuje skenovaání klávesnice a blikání kurzoru
+void loop() {
+  scan_keypad();
+  
+  if (isPowerOn) {
+    // Mrkání kurzoru
+    if (millis() - cursorBlinkTime > CURSOR_BLINK_INTERVAL) {
+      cursorVisible = !cursorVisible;
+      cursorBlinkTime = millis();
+      updateDisplay();
+    }
+  }
+  
+  delay(50);
+}
+
+// Vypočítá offset pro scrollování tak, aby byl kurzor vždy viditelný na displeji
+void calculateScrollOffset() {
+  if (!fractionMode) {
+    // Získání šířky textu před kurzorem
+    String beforeCursor = expression.substring(0, cursorPosition);
+    int textWidth = display.getStrWidth(beforeCursor.c_str());
+    
+    // Pokud je kurzor za pravým okrajem displeje, posuňme offset
+    if (textWidth - displayScrollOffset > DISPLAY_WIDTH - TEXT_MARGIN) {
+      displayScrollOffset = textWidth - (DISPLAY_WIDTH - TEXT_MARGIN * 2);
+    }
+    // Pokud je kurzor před levým okrajem displeje, posuňme offset
+    else if (textWidth - displayScrollOffset < TEXT_MARGIN) {
+      displayScrollOffset = textWidth - TEXT_MARGIN;
+      // Zajistíme, že offset není záporný
+      if (displayScrollOffset < 0) {
+        displayScrollOffset = 0;
+      }
+    }
+  } else {
+    // Podobná logika pro režim zlomku
+    String beforeCursor;
+    int textWidth;
+    
+    if (fractionCursorPosition == 0) {
+      // Čitatel
+      beforeCursor = numerator.substring(0, numeratorCursorPos);
+      textWidth = display.getStrWidth(beforeCursor.c_str());
+      
+      if (textWidth - displayScrollOffset > DISPLAY_WIDTH - TEXT_MARGIN) {
+        displayScrollOffset = textWidth - (DISPLAY_WIDTH - TEXT_MARGIN * 2);
+      } else if (textWidth - displayScrollOffset < TEXT_MARGIN) {
+        displayScrollOffset = textWidth - TEXT_MARGIN;
+        if (displayScrollOffset < 0) {
+          displayScrollOffset = 0;
+        }
+      }
+    } else {
+      // Jmenovatel
+      beforeCursor = denominator.substring(0, denominatorCursorPos);
+      textWidth = display.getStrWidth(beforeCursor.c_str());
+      
+      if (textWidth - displayScrollOffset > DISPLAY_WIDTH - TEXT_MARGIN) {
+        displayScrollOffset = textWidth - (DISPLAY_WIDTH - TEXT_MARGIN * 2);
+      } else if (textWidth - displayScrollOffset < TEXT_MARGIN) {
+        displayScrollOffset = textWidth - TEXT_MARGIN;
+        if (displayScrollOffset < 0) {
+          displayScrollOffset = 0;
+        }
+      }
+    }
+  }
+}
+
+// Kompletní funkce updateDisplay s opravou lomené čáry pro zlomky
+void updateDisplay() {
+  // Pokud je kalkulačka vypnuta, nic nevykreslujeme
+  if (!isPowerOn) {
+    return;
+  }
+  
+  calculateScrollOffset();
+  display.clearBuffer();
+  // Zde měníme font na větší - použijeme font s velikostí 16 pixelů místo 8
+  display.setFont(u8g2_font_ncenB14_tr); // Dvakrát větší font oproti původnímu
+  
+  if (quadraticMode) {
+    // Zobrazení režimu kvadratické rovnice
+    if (quadraticStep == 3) {
+      // Zobrazení výsledku
+      if (twoLineResult) {
+        // Rozdělení výsledku na dva řádky
+        int newlinePos = quadraticResult.indexOf('\n');
+        String line1 = quadraticResult.substring(0, newlinePos);
+        String line2 = quadraticResult.substring(newlinePos + 1);
+        
+        display.drawStr(0, 20, line1.c_str());
+        display.drawStr(0, 45, line2.c_str());
+      } else {
+        // Jednořádkový výsledek
+        display.drawStr(0, 30, quadraticResult.c_str());
+      }
+    } else {
+      // Zobrazení vstupních polí
+      String aLabel = "a: " + coefA;
+      String bLabel = "b: " + coefB;
+      String cLabel = "c: " + coefC;
+      
+      // Zobrazení aktuálního koeficientu
+      if (quadraticStep == 0) {
+        display.drawStr(0, 20, aLabel.c_str());
+        // Zobrazení kurzoru za koeficientem a
+        if (cursorVisible) {
+          int xPos = display.getStrWidth(aLabel.c_str());
+          display.drawLine(xPos, 4, xPos, 20);
+        }
+      } else {
+        display.drawStr(0, 20, aLabel.c_str());
+      }
+      
+      if (quadraticStep == 1) {
+        display.drawStr(0, 40, bLabel.c_str());
+        // Zobrazení kurzoru za koeficientem b
+        if (cursorVisible) {
+          int xPos = display.getStrWidth(bLabel.c_str());
+          display.drawLine(xPos, 24, xPos, 40);
+        }
+      } else {
+        display.drawStr(0, 40, bLabel.c_str());
+      }
+      
+      if (quadraticStep == 2) {
+        display.drawStr(0, 60, cLabel.c_str());
+        // Zobrazení kurzoru za koeficientem c
+        if (cursorVisible) {
+          int xPos = display.getStrWidth(cLabel.c_str());
+          display.drawLine(xPos, 44, xPos, 60);
+        }
+      } else {
+        display.drawStr(0, 60, cLabel.c_str());
+      }
+    }
+  } else if (fractionMode) {
+    // Zobrazení zlomku s offsetem pro scrollování
+    
+    // Zlomkový režim - čitatel
+    int currentX = -displayScrollOffset;
+    int i = 0;
+    int numeratorWidth = 0; // Pro výpočet šířky čitatele
+    
+    while (i < numerator.length()) {
+      // Kontrola, zda se na aktuální pozici nachází "SQRT"
+      if (i + 3 < numerator.length() && 
+          numerator.charAt(i) == 'S' && 
+          numerator.charAt(i+1) == 'Q' && 
+          numerator.charAt(i+2) == 'R' && 
+          numerator.charAt(i+3) == 'T') {
+        
+        // Vykreslení symbolu odmocniny v čitateli
+        drawSquareRootSymbol(currentX, 20, 16);
+        int symbolWidth = getSquareRootSymbolWidth(16);
+        currentX += symbolWidth;
+        numeratorWidth += symbolWidth; // Přidáme šířku symbolu odmocniny
+        i += 4;  // Přeskočíme "SQRT"
+      }
+      // Kontrola, zda se na aktuální pozici nachází "POW"
+      else if (i + 2 < numerator.length() && 
+              numerator.charAt(i) == 'P' && 
+              numerator.charAt(i+1) == 'O' && 
+              numerator.charAt(i+2) == 'W') {
+        
+        // Vykreslení symbolu druhé mocniny v čitateli
+        drawSquaredSymbol(currentX, 20, 16);
+        int symbolWidth = getSquaredSymbolWidth(16);
+        currentX += symbolWidth;
+        numeratorWidth += symbolWidth; // Přidáme šířku symbolu druhé mocniny
+        i += 3;  // Přeskočíme "POW"
+      }
+      else {
+        // Vykreslení běžného znaku
+        char tmpStr[2] = {numerator.charAt(i), '\0'};
+        display.drawStr(currentX, 20, tmpStr);
+        int charWidth = display.getStrWidth(tmpStr);
+        currentX += charWidth;
+        numeratorWidth += charWidth; // Přidáme šířku znaku
+        i++;
+      }
+    }
+    
+    // Počítáme šířku jmenovatele s ohledem na speciální symboly
+    int denominatorWidth = 0;
+    i = 0;
+    while (i < denominator.length()) {
+      if (i + 3 < denominator.length() && 
+          denominator.charAt(i) == 'S' && 
+          denominator.charAt(i+1) == 'Q' && 
+          denominator.charAt(i+2) == 'R' && 
+          denominator.charAt(i+3) == 'T') {
+        denominatorWidth += getSquareRootSymbolWidth(16);
+        i += 4;
+      }
+      else if (i + 2 < denominator.length() && 
+              denominator.charAt(i) == 'P' && 
+              denominator.charAt(i+1) == 'O' && 
+              denominator.charAt(i+2) == 'W') {
+        denominatorWidth += getSquaredSymbolWidth(16);
+        i += 3;
+      }
+      else {
+        char tmpStr[2] = {denominator.charAt(i), '\0'};
+        denominatorWidth += display.getStrWidth(tmpStr);
+        i++;
+      }
+    }
+    
+    // Vykreslit čáru pod čitatelem - upraveno pro správné scrollování
+    int lineWidth = max(numeratorWidth, denominatorWidth);
+    lineWidth = max(lineWidth, 10);  // Minimální délka čáry
+    
+    // DŮLEŽITÁ OPRAVA: Vykreslení zlomkové čáry tak, aby byla vždy viditelná
+    int lineStartX = -displayScrollOffset;
+    int lineEndX = lineStartX + lineWidth;
+    
+    // Zajistíme, aby čára byla vždy v rámci viditelné oblasti displeje
+    if (lineStartX < 0 && lineEndX < 0) {
+      lineStartX = 0;
+      lineEndX = lineWidth;
+    } else if (lineStartX > DISPLAY_WIDTH && lineEndX > DISPLAY_WIDTH) {
+      lineEndX = DISPLAY_WIDTH;
+      lineStartX = DISPLAY_WIDTH - lineWidth;
+    } else {
+      if (lineStartX < 0) lineStartX = 0;
+      if (lineEndX > DISPLAY_WIDTH) lineEndX = DISPLAY_WIDTH;
+    }
+    
+    display.drawLine(lineStartX, 24, lineEndX, 24);
+    
+    // Zlomkový režim - jmenovatel
+    currentX = -displayScrollOffset;
+    i = 0;
+    while (i < denominator.length()) {
+      // Kontrola, zda se na aktuální pozici nachází "SQRT"
+      if (i + 3 < denominator.length() && 
+          denominator.charAt(i) == 'S' && 
+          denominator.charAt(i+1) == 'Q' && 
+          denominator.charAt(i+2) == 'R' && 
+          denominator.charAt(i+3) == 'T') {
+        
+        // Vykreslení symbolu odmocniny v jmenovateli
+        drawSquareRootSymbol(currentX, 45, 16);
+        currentX += getSquareRootSymbolWidth(16);
+        i += 4;  // Přeskočíme "SQRT"
+      }
+      // Kontrola, zda se na aktuální pozici nachází "POW"
+      else if (i + 2 < denominator.length() && 
+              denominator.charAt(i) == 'P' && 
+              denominator.charAt(i+1) == 'O' && 
+              denominator.charAt(i+2) == 'W') {
+        
+        // Vykreslení symbolu druhé mocniny v jmenovateli
+        drawSquaredSymbol(currentX, 45, 16);
+        currentX += getSquaredSymbolWidth(16);
+        i += 3;  // Přeskočíme "POW"
+      }
+      else {
+        // Vykreslení běžného znaku
+        char tmpStr[2] = {denominator.charAt(i), '\0'};
+        display.drawStr(currentX, 45, tmpStr);
+        currentX += display.getStrWidth(tmpStr);
+        i++;
+      }
+    }
+    
+    // Zobrazení kurzoru ve zlomku
+    if (cursorVisible && !divisionByZeroError && !largeResultError) {
+      if (fractionCursorPosition == 0) {
+        // Výpočet pozice kurzoru v čitateli
+        int xPos = -displayScrollOffset;
+        i = 0;
+        for (int curIdx = 0; curIdx < numeratorCursorPos; curIdx++) {
+          if (i >= numerator.length()) break;
+          
+          if (i + 3 < numerator.length() && 
+              numerator.charAt(i) == 'S' && 
+              numerator.charAt(i+1) == 'Q' && 
+              numerator.charAt(i+2) == 'R' && 
+              numerator.charAt(i+3) == 'T') {
+            
+            xPos += getSquareRootSymbolWidth(16);
+            i += 4;
+          }
+          else if (i + 2 < numerator.length() && 
+                  numerator.charAt(i) == 'P' && 
+                  numerator.charAt(i+1) == 'O' && 
+                  numerator.charAt(i+2) == 'W') {
+            
+            xPos += getSquaredSymbolWidth(16);
+            i += 3;
+          }
+          else {
+            char tmpStr[2] = {numerator.charAt(i), '\0'};
+            xPos += display.getStrWidth(tmpStr);
+            i++;
+          }
+        }
+        display.drawLine(xPos, 4, xPos, 20); // Úprava výšky kurzoru
+      } else {
+        // Výpočet pozice kurzoru v jmenovateli
+        int xPos = -displayScrollOffset;
+        i = 0;
+        for (int curIdx = 0; curIdx < denominatorCursorPos; curIdx++) {
+          if (i >= denominator.length()) break;
+          
+          if (i + 3 < denominator.length() && 
+              denominator.charAt(i) == 'S' && 
+              denominator.charAt(i+1) == 'Q' && 
+              denominator.charAt(i+2) == 'R' && 
+              denominator.charAt(i+3) == 'T') {
+            
+            xPos += getSquareRootSymbolWidth(16);
+            i += 4;
+          }
+          else if (i + 2 < denominator.length() && 
+                  denominator.charAt(i) == 'P' && 
+                  denominator.charAt(i+1) == 'O' && 
+                  denominator.charAt(i+2) == 'W') {
+            
+            xPos += getSquaredSymbolWidth(16);
+            i += 3;
+          }
+          else {
+            char tmpStr[2] = {denominator.charAt(i), '\0'};
+            xPos += display.getStrWidth(tmpStr);
+            i++;
+          }
+        }
+        display.drawLine(xPos, 28, xPos, 45); // Úprava výšky kurzoru
+      }
+    }
+  } else {
+    // Normální režim 
+    if (showDMS && trigResultActive) {
+      // Speciální zobrazení DMS formátu s vlastními symboly
+      int degrees, minutes, seconds;
+      bool isNegative;
+      
+      // Získání komponent přímo z hodnoty lastTrigResult
+      getDMSComponents(lastTrigResult, degrees, minutes, seconds, isNegative);
+      
+      // Vytvoření textových částí
+      String degPart = isNegative ? "-" + String(degrees) : String(degrees);
+      String minPart = String(minutes);
+      String secPart = String(seconds);
+      
+      // Vykreslení jednotlivých částí s vlastními symboly
+      int xPos = -displayScrollOffset;
+      
+      // Stupně
+      display.drawStr(xPos, 20, degPart.c_str());
+      xPos += display.getStrWidth(degPart.c_str());
+      
+      // Symbol stupně - kroužek
+      display.drawCircle(xPos + 3, 8, 2);
+      xPos += 8;
+      
+      // Minuty
+      display.drawStr(xPos, 20, minPart.c_str());
+      xPos += display.getStrWidth(minPart.c_str());
+      
+      // Symbol minuty - apostrof
+      display.drawLine(xPos + 2, 8, xPos + 4, 12);
+      xPos += 8;
+      
+      // Vteřiny
+      display.drawStr(xPos, 20, secPart.c_str());
+      xPos += display.getStrWidth(secPart.c_str());
+      
+      // Symbol vteřiny - dva apostrofy
+      display.drawLine(xPos + 2, 8, xPos + 4, 12);
+      display.drawLine(xPos + 5, 8, xPos + 7, 12);
+    } else {
+      // Normální režim - přímé vykreslování speciálních symbolů
+      int currentX = -displayScrollOffset;
+      int i = 0;
+      while (i < expression.length()) {
+        // Kontrola, zda se na aktuální pozici nachází "SQRT"
+        if (i + 3 < expression.length() && 
+            expression.charAt(i) == 'S' && 
+            expression.charAt(i+1) == 'Q' && 
+            expression.charAt(i+2) == 'R' && 
+            expression.charAt(i+3) == 'T') {
+          
+          // Vykreslení symbolu odmocniny
+          drawSquareRootSymbol(currentX, 20, 16);
+          currentX += getSquareRootSymbolWidth(16);
+          i += 4;  // Přeskočíme "SQRT"
+        }
+        // Kontrola, zda se na aktuální pozici nachází "POW"
+        else if (i + 2 < expression.length() && 
+                expression.charAt(i) == 'P' && 
+                expression.charAt(i+1) == 'O' && 
+                expression.charAt(i+2) == 'W') {
+          
+          // Vykreslení symbolu druhé mocniny
+          drawSquaredSymbol(currentX, 20, 16);
+          currentX += getSquaredSymbolWidth(16);
+          i += 3;  // Přeskočíme "POW"
+        }
+        else {
+          // Vykreslení běžného znaku
+          char tmpStr[2] = {expression.charAt(i), '\0'};
+          display.drawStr(currentX, 20, tmpStr);
+          currentX += display.getStrWidth(tmpStr);
+          i++;
+        }
+      }
+      
+      // Zobrazení kurzoru (nezobrazovat v případě chyby dělení nulou nebo velkého výsledku)
+      if (cursorVisible && !divisionByZeroError && !largeResultError) {
+        // Výpočet pozice kurzoru
+        int xPos = -displayScrollOffset;
+        i = 0;
+        for (int curIdx = 0; curIdx < cursorPosition; curIdx++) {
+          if (i >= expression.length()) break;
+          
+          if (i + 3 < expression.length() && 
+              expression.charAt(i) == 'S' && 
+              expression.charAt(i+1) == 'Q' && 
+              expression.charAt(i+2) == 'R' && 
+              expression.charAt(i+3) == 'T') {
+            
+            xPos += getSquareRootSymbolWidth(16);
+            i += 4;
+          }
+          else if (i + 2 < expression.length() && 
+                  expression.charAt(i) == 'P' && 
+                  expression.charAt(i+1) == 'O' && 
+                  expression.charAt(i+2) == 'W') {
+            
+            xPos += getSquaredSymbolWidth(16);
+            i += 3;
+          }
+          else {
+            char tmpStr[2] = {expression.charAt(i), '\0'};
+            xPos += display.getStrWidth(tmpStr);
+            i++;
+          }
+        }
+        display.drawLine(xPos, 4, xPos, 20); // Úprava výšky kurzoru
+      }
+    }
+  }
+  
+  // Zobrazení indikátoru scrollování vlevo, pokud je obsah posunutý
+  if (displayScrollOffset > 0) {
+    drawLeftScrollIndicator();
+  }
+  
+  // Přidání indikátoru FN módu
+  if (fnModeActive) {
+    display.setFont(u8g2_font_ncenB08_tr); // Menší font pro indikátor
+    display.drawStr(DISPLAY_WIDTH - 16, 63, "fn");
+    display.setFont(u8g2_font_ncenB14_tr); // Návrat k normálnímu fontu
+  }
+  
+  // Přidání indikátoru DMS módu, pokud je aktivní
+  if (showDMS && trigResultActive) {
+    display.setFont(u8g2_font_ncenB08_tr); // Menší font pro indikátor
+    display.drawStr(DISPLAY_WIDTH - 45, 63, "DMS");
+    display.setFont(u8g2_font_ncenB14_tr); // Návrat k normálnímu fontu
+  }
+  
+  display.sendBuffer();
+}
+
+// Vykreslí indikátor scrollování (šipku) pokud je text posunutý mimo viditelnou oblast
+void drawLeftScrollIndicator() {
+  // Pozice šipky v levém dolním rohu displeje, posunuto o 5 pixelů nahoru
+  display.drawLine(2, 55, SCROLL_INDICATOR_WIDTH + 2, 50); // Horní část šipky
+  display.drawLine(2, 55, SCROLL_INDICATOR_WIDTH + 2, 60); // Dolní část šipky
+  display.drawLine(2, 55, SCROLL_INDICATOR_WIDTH + 4, 55); // Tělo šipky
+}
+
+// Aktualizace funkce scan_keypad pro použití alternativní klávesnice
+void scan_keypad() {
+  for (int rowIdx = 0; rowIdx < 8; rowIdx++) {
+    for (int colIdx = 0; colIdx < 5; colIdx++) {
+      digitalWrite(colPins[colIdx], HIGH);
+    }
+
+    pinMode(rowPins[rowIdx], OUTPUT);
+    digitalWrite(rowPins[rowIdx], LOW);
+    delayMicroseconds(50);
+
+    for (int colIdx = 0; colIdx < 5; colIdx++) {
+      pinMode(colPins[colIdx], INPUT_PULLUP);
+      if (digitalRead(colPins[colIdx]) == LOW) {
+        // Použít buď standardní nebo alternativní mapování kláves
+        const char* key;
+        if (fnModeActive) {
+          key = altKeyMap[rowIdx][colIdx];
+        } else {
+          key = keyMap[rowIdx][colIdx];
+        }
+        
+        // Zpracuj tlačítka ON a OFF okamžitě
+        if (strcmp(key, "ON") == 0 || strcmp(key, "OFF") == 0) {
+          process_key(key);
+        } else if (isPowerOn) {
+          // Zpracuj ostatní tlačítka pouze když je kalkulačka zapnutá
+          process_key(key);
+        }
+      }
+    }
+
+    pinMode(rowPins[rowIdx], INPUT_PULLUP);
+    delayMicroseconds(50);
+  }
+}
+
+// Vkládá text do čitatele nebo jmenovatele na aktuální pozici kurzoru ve zlomkovém režimu
+void insertIntoFraction(const char* text) {
+  // Kontrola maximální délky čitatele/jmenovatele
+  if (fractionCursorPosition == 0) {
+    if (numerator.length() + strlen(text) <= MAX_EXPRESSION_LENGTH) {
+      String before = numerator.substring(0, numeratorCursorPos);
+      String after = numerator.substring(numeratorCursorPos);
+      numerator = before + text + after;
+      numeratorCursorPos += strlen(text);
+    }
+  } else {
+    if (denominator.length() + strlen(text) <= MAX_EXPRESSION_LENGTH) {
+      String before = denominator.substring(0, denominatorCursorPos);
+      String after = denominator.substring(denominatorCursorPos);
+      denominator = before + text + after;
+      denominatorCursorPos += strlen(text);
+    }
+  }
+}
+
+// Nová pomocná funkce pro mazání celých výrazů včetně SQRT a POW
+bool tryDeleteCompleteExpression(String &expr, int &cursorPos) {
+  // Seznam funkcí, které chceme detekovat
+  const char* functions[] = {"sin(", "cos(", "tan(", "asin(", "acos(", "atan(", "SQRT", "log(", "ln(", "POW"};
+  const int numFunctions = 10;
+  
+  // Kontrola, zda kurzor je za nějakou funkcí
+  for (int i = 0; i < numFunctions; i++) {
+    int funcLen = strlen(functions[i]);
+    if (cursorPos >= funcLen) {
+      bool matches = true;
+      for (int j = 0; j < funcLen; j++) {
+        if (expr.charAt(cursorPos - funcLen + j) != functions[i][j]) {
+          matches = false;
+          break;
+        }
+      }
+      
+      if (matches) {
+        // Našli jsme funkci, smažeme ji celou
+        String before = expr.substring(0, cursorPos - funcLen);
+        String after = expr.substring(cursorPos);
+        expr = before + after;
+        cursorPos -= funcLen;
+        return true;
+      }
+    }
+  }
+  
+  return false;  // Žádný výraz nebyl smazán
+}
+
+void calculateQuadratic() {
+  double a = coefA.toDouble();
+  double b = coefB.toDouble();
+  double c = coefC.toDouble();
+  
+  // Kontrola, zda je to skutečně kvadratická rovnice (a != 0)
+  if (a == 0) {
+    quadraticResult = "Not\nQuadratic";
+    twoLineResult = true;
+    return;
+  }
+  
+  // Výpočet diskriminantu
+  double discriminant = b*b - 4*a*c;
+  
+  if (discriminant < 0) {
+    // Komplexní kořeny
+    quadraticResult = "No Solution";
+    twoLineResult = false;
+  } else if (discriminant == 0) {
+    // Jeden (dvojnásobný) kořen
+    double x = -b / (2 * a);
+    quadraticResult = "x = " + formatLargeNumber(x);
+    twoLineResult = false;
+  } else {
+    // Dva různé kořeny
+    double x1 = (-b + sqrt(discriminant)) / (2 * a);
+    double x2 = (-b - sqrt(discriminant)) / (2 * a);
+    
+    // Formátování výsledků
+    String x1Str = formatLargeNumber(x1);
+    String x2Str = formatLargeNumber(x2);
+    
+    quadraticResult = "x1 = " + x1Str;
+    quadraticResult += "\nx2 = " + x2Str;
+    twoLineResult = true;
+  }
+}
+
+void process_key(const char* key) {
+  cursorVisible = true;
+  cursorBlinkTime = millis();
+  
+  // Speciální obsluha klávesy FN
+  if (strcmp(key, "FN") == 0) {
+    fnModeActive = !fnModeActive; // Přepnutí FN módu
+    updateDisplay();
+    return;
+  }
+  
+  // Zpracování tlačítek ON a OFF
+  if (strcmp(key, "ON") == 0) {
+    isPowerOn = true;
+    cursorVisible = true;
+    cursorBlinkTime = millis();
+    updateDisplay();
+    return;
+  } else if (strcmp(key, "OFF") == 0) {
+    // Vymazání paměti před vypnutím
+    expression = "";
+    cursorPosition = 0;
+    displayScrollOffset = 0;
+    isScientificMode = false;
+    originalNumber = "";
+    fractionMode = false;
+    numerator = "";
+    denominator = "";
+    divisionByZeroError = false;
+    largeResultError = false;
+    symbolError = false;  // Resetování symbolError při vypnutí
+    fnModeActive = false; // Resetování FN módu při vypnutí
+    quadraticMode = false; // Resetování režimu kvadratické rovnice
+    trigResultActive = false; // Resetování příznaku trigonometrického výsledku
+    showDMS = false; // Resetování formátu DMS
+    
+    // Vypnutí kalkulačky
+    isPowerOn = false;
+    
+    // Vyčistíme displej
+    display.clearBuffer();
+    display.sendBuffer();
+    return;
+  }
+  
+  // Pokud je kalkulačka vypnuta, nereagujeme na ostatní tlačítka
+  if (!isPowerOn) {
+    return;
+  }
+  
+  cursorVisible = true;
+  cursorBlinkTime = millis();
+  
+  // Pokud je aktivní chyba symbolů, reagujeme pouze na tlačítko AC
+  if (symbolError && strcmp(key, "AC") == 0) {
+    symbolError = false;
+    expression = "";
+    cursorPosition = 0;
+    displayScrollOffset = 0;
+    isScientificMode = false;
+    originalNumber = "";
+    updateDisplay();
+    return;
+  } else if (symbolError) {
+    // Při chybě prázdného symbolu ignorujeme ostatní klávesy
+    return;
+  }
+  
+  // Pokud je aktivní chyba dělení nulou, reagujeme pouze na tlačítko AC
+  if (divisionByZeroError && strcmp(key, "AC") == 0) {
+    divisionByZeroError = false;
+    largeResultError = false;
+    expression = "";
+    cursorPosition = 0;
+    displayScrollOffset = 0;
+    isScientificMode = false;
+    originalNumber = "";
+    updateDisplay();
+    return;
+  } else if (divisionByZeroError) {
+    // Při chybě dělení nulou ignorujeme ostatní klávesy
+    return;
+  }
+  
+  // Zpracování tlačítka DEGREE pro přepnutí formátu zobrazení úhlu
+  if (strcmp(key, "DEGREE") == 0) {
+    if (trigResultActive) {
+      // Pouze přepneme formát zobrazení úhlu pro aktuální výsledek
+      showDMS = !showDMS;
+      // Aktualizace displeje
+      cursorPosition = expression.length(); // Kurzor na konci
+      displayScrollOffset = 0;
+      updateDisplay();
+      return;
+    } else {
+      // Pokud není aktivní trigonometrický výsledek, přepneme jen režim radiány/stupně
+      isRadianMode = !isRadianMode;
+      updateDisplay();
+      return;
+    }
+  }
+  
+  // Zpracování kláves v režimu kvadratické rovnice
+  if (quadraticMode) {
+    if (strcmp(key, "x12") == 0 || strcmp(key, "AC") == 0) {
+      // Ukončení režimu kvadratické rovnice
+      quadraticMode = false;
+      quadraticStep = 0;
+      coefA = "";
+      coefB = "";
+      coefC = "";
+      expression = "";
+      cursorPosition = 0;
+      twoLineResult = false;
+      updateDisplay();
+      return;
+    }
+    else if (strcmp(key, "OK") == 0 || strcmp(key, "=") == 0) {
+      if (quadraticStep == 2 && coefC.length() > 0) {
+        // Výpočet kvadratické rovnice
+        calculateQuadratic();
+        quadraticStep = 3; // Výsledek
+        updateDisplay();
+      }
+      return;
+    }
+    else if (strcmp(key, "BACK") == 0) {
+      // Mazání podle aktuálního kroku
+      if (quadraticStep == 0 && coefA.length() > 0) {
+        coefA = coefA.substring(0, coefA.length() - 1);
+      }
+      else if (quadraticStep == 1 && coefB.length() > 0) {
+        coefB = coefB.substring(0, coefB.length() - 1);
+      }
+      else if (quadraticStep == 2 && coefC.length() > 0) {
+        coefC = coefC.substring(0, coefC.length() - 1);
+      }
+      updateDisplay();
+      return;
+    }
+    else if (strcmp(key, "UP") == 0 || strcmp(key, "DOWN") == 0) {
+      // Navigace mezi koeficienty
+      if (quadraticStep < 2) {
+        quadraticStep++;
+      } else if (quadraticStep == 2) {
+        quadraticStep = 0;
+      }
+      updateDisplay();
+      return;
+    }
+    else if ((key[0] >= '0' && key[0] <= '9') || strcmp(key, ".") == 0 || strcmp(key, "-") == 0) {
+      // Přidání čísel nebo desetinné tečky nebo znaménka mínus (jen na začátku)
+      if (quadraticStep == 0) {
+        if (strcmp(key, "-") == 0 && coefA.length() == 0) {
+          coefA += key;
+        } else if (strcmp(key, "-") != 0 || coefA.length() > 0) {
+          // Přidáme pouze pokud to není mínus nebo pokud už něco máme
+          coefA += key;
+        }
+      }
+      else if (quadraticStep == 1) {
+        if (strcmp(key, "-") == 0 && coefB.length() == 0) {
+          coefB += key;
+        } else if (strcmp(key, "-") != 0 || coefB.length() > 0) {
+          coefB += key;
+        }
+      }
+      else if (quadraticStep == 2) {
+        if (strcmp(key, "-") == 0 && coefC.length() == 0) {
+          coefC += key;
+        } else if (strcmp(key, "-") != 0 || coefC.length() > 0) {
+          coefC += key;
+        }
+      }
+      updateDisplay();
+      return;
+    }
+    // Ignorujeme ostatní klávesy v režimu kvadratické rovnice
+    return;
+  }
+  
+  // Kontrola, zda je zobrazeno číslo ve vědecké notaci (obsahuje "x10^")
+  bool scientificNotation = expression.indexOf("x10^") != -1;
+  
+  // Povolujeme tlačítka AC, LEFT, RIGHT, UP, DOWN, S&D i při velkém výsledku či vědecké notaci
+  if (largeResultError || scientificNotation) {
+    if (strcmp(key, "AC") == 0) {
+      largeResultError = false;
+      expression = "";
+      cursorPosition = 0;
+      displayScrollOffset = 0;
+      isScientificMode = false;
+      originalNumber = "";
+      updateDisplay();
+      return;
+    } else if (strcmp(key, "LEFT") == 0) {
+      if (cursorPosition > 0) cursorPosition--;
+      updateDisplay();
+      return;
+    } else if (strcmp(key, "RIGHT") == 0) {
+      if (cursorPosition < expression.length()) cursorPosition++;
+      updateDisplay();
+      return;
+    } else if (strcmp(key, "UP") == 0) {
+      cursorPosition = 0;
+      displayScrollOffset = 0;
+      updateDisplay();
+      return;
+    } else if (strcmp(key, "DOWN") == 0) {
+      cursorPosition = expression.length();
+      updateDisplay();
+      return;
+    } else if (strcmp(key, "S&D") == 0 && isScientificMode) {
+      // Přepnutí zpět na původní číslo, pokud je ve vědeckém formátu
+      if (originalNumber.length() <= MAX_EXPRESSION_LENGTH) {
+        expression = originalNumber;
+        isScientificMode = false;
+        cursorPosition = expression.length(); // Nastavení kurzoru na konec
+        displayScrollOffset = 0; // Reset scrollování na začátek
+        updateDisplay();
+      }
+      return;
+    } else {
+      // Při velkém výsledku či vědecké notaci ignorujeme ostatní klávesy
+      return;
+    }
+  }
+
+  if (fractionMode) {
+    // Zpracování kláves v režimu zlomku
+    if (strcmp(key, "UP") == 0 || strcmp(key, "DOWN") == 0) {
+      fractionCursorPosition = 1 - fractionCursorPosition;  // Přepíná mezi čitatelem a jmenovatelem
+    }
+    else if (strcmp(key, "LEFT") == 0) {
+      if (fractionCursorPosition == 0) {
+        if (numeratorCursorPos > 0) numeratorCursorPos--;
+      } else {
+        if (denominatorCursorPos > 0) denominatorCursorPos--;
+      }
+    }
+    else if (strcmp(key, "RIGHT") == 0) {
+      if (fractionCursorPosition == 0) {
+        if (numeratorCursorPos < numerator.length()) numeratorCursorPos++;
+      } else {
+        if (denominatorCursorPos < denominator.length()) denominatorCursorPos++;
+      }
+    }
+    else if (strcmp(key, "BACK") == 0) {
+      if (fractionCursorPosition == 0) {
+        if (numerator.length() > 0 && numeratorCursorPos > 0) {
+          // Nejprve zkusíme smazat celý výraz v čitateli
+          if (!tryDeleteCompleteExpression(numerator, numeratorCursorPos)) {
+            // Pokud se nepodařilo smazat celý výraz, smažeme jen jeden znak
+            String before = numerator.substring(0, numeratorCursorPos - 1);
+            String after = numerator.substring(numeratorCursorPos);
+            numerator = before + after;
+            numeratorCursorPos--;
+          }
+        }
+      } else {
+        if (denominator.length() > 0 && denominatorCursorPos > 0) {
+          // Nejprve zkusíme smazat celý výraz ve jmenovateli
+          if (!tryDeleteCompleteExpression(denominator, denominatorCursorPos)) {
+            // Pokud se nepodařilo smazat celý výraz, smažeme jen jeden znak
+            String before = denominator.substring(0, denominatorCursorPos - 1);
+            String after = denominator.substring(denominatorCursorPos);
+            denominator = before + after;
+            denominatorCursorPos--;
+          }
+        }
+      }
+    }
+    else if (strcmp(key, "=") == 0) {
+      // Ošetření pro prázdný čitatel nebo jmenovatel
+      if (numerator.length() == 0 || denominator.length() == 0) {
+        // Pokud je čitatel nebo jmenovatel prázdný, ignorujeme tlačítko "="
+        Serial.println("Nelze potvrdit zlomek - prázdný čitatel nebo jmenovatel");
+        return;
+      }
+      
+      // Kontrola, zda čitatel nebo jmenovatel neobsahuje prázdné symboly SQRT nebo POW
+      if (hasEmptyMathSymbol(numerator) || hasEmptyMathSymbol(denominator)) {
+        // Zobrazení chyby a zastavení výpočtu
+        Serial.println("Error: Empty SQRT or POW symbol in fraction");
+        expression = "Symbol Error";
+        symbolError = true;  // Nastavíme příznak chyby symbolu
+        fractionMode = false;
+        cursorPosition = expression.length(); // Kurzor na konci chybové zprávy
+        displayScrollOffset = 0;
+        updateDisplay();
+        return;
+      }
+      
+      // Dokončení zlomku a převod na výsledek
+      double numValue = eval(numerator);
+      double denValue = eval(denominator);
+      
+      if (denValue != 0) {
+        double result = numValue / denValue;
+        
+        // Kontrola, zda výsledek bude příliš dlouhý
+        String resultStr = formatLargeNumber(result);
+        
+        if (resultStr.length() > MAX_EXPRESSION_LENGTH) {
+          largeResultError = true;
+          expression = resultStr;
+        } else {
+          expression = resultStr;
+        }
+        
+        // Nastavení pozice kurzoru na konec výrazu
+        cursorPosition = expression.length();
+        
+        // Nastavení příznaku vědecké notace, pokud je výsledek v tomto formátu
+        if (expression.indexOf("x10^") != -1) {
+          isScientificMode = true;
+          // Uložení původního čísla před konverzí
+          originalNumber = String(result);
+        } else {
+          isScientificMode = false;
+          originalNumber = "";
+        }
+      } else {
+        Serial.println("Error: Division by zero in fraction");
+        expression = "NaN";
+        divisionByZeroError = true;
+        cursorPosition = expression.length(); // Kurzor na konci "NaN"
+        displayScrollOffset = 0;
+      }
+      
+      fractionMode = false;
+      numerator = "";
+      denominator = "";
+    }
+    else if (strcmp(key, "AC") == 0) {
+      fractionMode = false;
+      numerator = "";
+      denominator = "";
+      expression = "";
+      cursorPosition = 0;
+      displayScrollOffset = 0;
+      isScientificMode = false;
+      originalNumber = "";
+    }
+    else if (strcmp(key, "FRACTION") == 0) {
+      fractionMode = false;
+    }
+    else if (strcmp(key, "S&D") == 0) {
+      // Ignorujeme S&D v režimu zlomku
+      return;
+    }
+    else {
+      // Pro všechny ostatní klávesy vlož text do zlomku
+      insertIntoFraction(key);
+    }
+  } else {
+    // Zpracování kláves v normálním režimu
+    if (strcmp(key, "S&D") == 0) {
+      // Kontrolujeme, jestli je výraz pouze číslo (bez operátorů)
+      bool isNumeric = isNumericExpression(expression);
+      
+      if (isScientificMode) {
+        // Pokud je už ve vědeckém formátu, vrátíme se k původnímu číslu
+        if (originalNumber.length() <= MAX_EXPRESSION_LENGTH) {
+          expression = originalNumber;
+          isScientificMode = false;
+          cursorPosition = expression.length(); // Nastavení kurzoru na konec řádku
+          displayScrollOffset = 0; // Reset scrollování na začátek
+        }
+      } else {
+        // Pokud je výraz pouze číslo a má více než 3 číslice a není ve vědeckém formátu
+        if (isNumeric && expression.length() > 3) {
+          // Uložení původního čísla před konverzí
+          originalNumber = expression;
+          
+          double numValue = expression.toDouble();
+          // Formátujeme číslo ve vědecké notaci
+          String resultStr = formatLargeNumber(numValue);
+          
+          if (resultStr.indexOf("x10^") == -1) {
+            // Pokud výsledek není ve vědeckém formátu, převedeme ho manuálně
+            int exponent = 0;
+            double mantissa = numValue;
+            
+            // Normalizace mantisy do rozsahu [1, 10)
+            while (abs(mantissa) >= 10.0) {
+              mantissa /= 10.0;
+              exponent++;
+            }
+            
+            // Formátování výsledku
+            String mantissaStr = String(mantissa, 2);
+            // Odstranění koncových nul a desetinné tečky, pokud je celé číslo
+            while (mantissaStr.endsWith("0")) {
+              mantissaStr.remove(mantissaStr.length() - 1);
+            }
+            if (mantissaStr.endsWith(".")) {
+              mantissaStr.remove(mantissaStr.length() - 1);
+            }
+            
+            resultStr = mantissaStr + "x10^" + String(exponent);
+          }
+          
+          if (resultStr.length() > MAX_EXPRESSION_LENGTH) {
+            largeResultError = true;
+          }
+          
+          expression = resultStr;
+          isScientificMode = true;
+          
+          // Nastavení pozice kurzoru na konec výrazu
+          cursorPosition = expression.length();
+          displayScrollOffset = 0; // Reset scrollování na začátek
+        } else {
+          // Pokud není číslo nebo nemá více než 3 číslice, NEBUDEME vkládat "S&D" do výrazu
+          // Ignorujeme tlačítko S&D v tomto případě
+          return;
+        }
+      }
+    }
+    else if (strcmp(key, "LEFT") == 0) {
+      if (cursorPosition > 0) cursorPosition--;
+    } 
+    else if (strcmp(key, "RIGHT") == 0) {
+      if (cursorPosition < expression.length()) cursorPosition++;
+    }
+    else if (strcmp(key, "UP") == 0) {
+      cursorPosition = 0;
+      displayScrollOffset = 0;
+    }
+    else if (strcmp(key, "DOWN") == 0) {
+      cursorPosition = expression.length();
+    }
+    else if (strcmp(key, "BACK") == 0) {
+      if (expression.length() > 0 && cursorPosition > 0) {
+        // Nejprve zkusíme smazat celý výraz (funkci) najednou
+        if (!tryDeleteCompleteExpression(expression, cursorPosition)) {
+          // Pokud se nepodařilo smazat celý výraz, smažeme jen jeden znak
+          String before = expression.substring(0, cursorPosition - 1);
+          String after = expression.substring(cursorPosition);
+          expression = before + after;
+          cursorPosition--;
+        }
+        // Pokud uživatel edituje výraz, resetujeme příznak vědeckého formátu
+        isScientificMode = false;
+        originalNumber = "";
+      }
+    }
+    else if (strcmp(key, "=") == 0) {
+      // Kontrola, zda výraz neobsahuje prázdné symboly SQRT nebo POW
+      if (hasEmptyMathSymbol(expression)) {
+        // Zobrazení chyby a zastavení výpočtu
+        Serial.println("Error: Empty SQRT or POW symbol");
+        expression = "Symbol Error";
+        symbolError = true;  // Nastavíme příznak chyby symbolu
+        cursorPosition = expression.length(); // Nastavení kurzoru na konec chybové zprávy
+        displayScrollOffset = 0;
+        updateDisplay();
+        return;
+      }
+      
+      // Zachováme původní číslo před výpočtem výsledku
+      String tempExpr = expression;
+      calculate_result();
+      
+      // Kontrola, zda je výsledek ve vědeckém formátu a nastavení příznaku
+      if (expression.indexOf("x10^") != -1) {
+        isScientificMode = true;
+        double result = eval(tempExpr);
+        originalNumber = String(result);
+      } else {
+        isScientificMode = false;
+        originalNumber = "";
+      }
+      
+      // Kurzor vždy na konci výsledku
+      cursorPosition = expression.length();
+    } 
+    else if (strcmp(key, "AC") == 0) {
+      expression = "";
+      cursorPosition = 0;
+      displayScrollOffset = 0;
+      isScientificMode = false;
+      originalNumber = "";
+    } 
+    else if (strcmp(key, "FRACTION") == 0) {
+      fractionMode = true;
+      numerator = "";
+      denominator = "";
+      fractionCursorPosition = 0;
+      numeratorCursorPos = 0;
+      denominatorCursorPos = 0;
+      displayScrollOffset = 0;
+    }
+    // DŮLEŽITÁ ZMĚNA ZDE: Přidání podpory pro x12
+    else if (strcmp(key, "x12") == 0) {
+      // Přepneme do režimu kvadratické rovnice
+      quadraticMode = true;
+      quadraticStep = 0;
+      coefA = "";
+      coefB = "";
+      coefC = "";
+      twoLineResult = false;
+      updateDisplay();
+      return;
+    }
+    // DŮLEŽITÁ ZMĚNA ZDE: Explicitně kontroluj všechny speciální klávesy a teprve ostatní vkládej do výrazu
+    else if (strcmp(key, "SQRT") == 0) {
+      insertAtCursor("SQRT");
+      isScientificMode = false;
+      originalNumber = "";
+    }
+    else if (strcmp(key, "POW") == 0) {
+      insertAtCursor("POW");
+      isScientificMode = false;
+      originalNumber = "";
+    }
+    else if (strcmp(key, "DEGREE") == 0) {
+      // Zpracování klávesy DEGREE - nepřidávat do textu
+      isRadianMode = !isRadianMode; // Přepínání mezi stupni a radiány
+    }
+    else if (strcmp(key, "GPH") == 0) {
+      // Zpracování klávesy GPH - nepřidávat do textu
+      // (Zde by byla implementace funkce grafu, pokud je potřeba)
+    }
+    else {
+      // Pro všechny ostatní klávesy vlož text do výrazu
+      insertAtCursor(key);
+      // Pokud uživatel vkládá do výrazu, resetujeme příznak vědeckého formátu
+      isScientificMode = false;
+      originalNumber = "";
+    }
+  }
+
+  updateDisplay();
+  
+  if (fractionMode) {
+    Serial.print("Režim zlomku - Čitatel: ");
+    Serial.print(numerator);
+    Serial.print(", Jmenovatel: ");
+    Serial.println(denominator);
+  } else {
+    Serial.print("Normální režim - Výraz: ");
+    Serial.println(expression);
+    if (isScientificMode) {
+      Serial.print("Původní číslo: ");
+      Serial.println(originalNumber);
+    }
+  }
+}
+
+// Vkládá text do výrazu na aktuální pozici kurzoru
+void insertAtCursor(const char* text) {
+  // Kontrola maximální délky výrazu
+  if (expression.length() + strlen(text) <= MAX_EXPRESSION_LENGTH) {
+    String before = expression.substring(0, cursorPosition);
+    String after = expression.substring(cursorPosition);
+    expression = before + text + after;
+    cursorPosition += strlen(text);
+  }
+}
+
+// Upravení funkce formatLargeNumber pro podporu DMS formátu
+String formatLargeNumber(double number) {
+  String formattedResult;
+  
+  if (isnan(number)) {
+    return "NaN";
+  }
+  
+  if (number == 0) {
+    return "0";
+  }
+  
+  // Kontrola, zda jde o výsledek trigonometrické funkce a jsme v DMS režimu
+  if (showDMS && trigResultActive) {
+    return convertToDMS(number);
+  }
+  
+  if (abs(number) >= 1e6 || abs(number) < 0.000001) {
+    // Vědecká notace pro velká nebo velmi malá čísla
+    int exponent = floor(log10(abs(number)));
+    double mantissa = number / pow(10, exponent);
+    
+    // Zaokrouhlení mantisy na 2 desetinná místa místo 6
+    mantissa = round(mantissa * 100) / 100;
+    
+    // Vytvoření řetězce ve formátu 6×10^n
+    String mantissaStr = String(mantissa, 2);
+    // Odstranění koncových nul a desetinné tečky, pokud je celé číslo
+    while (mantissaStr.endsWith("0")) {
+      mantissaStr.remove(mantissaStr.length() - 1);
+    }
+    if (mantissaStr.endsWith(".")) {
+      mantissaStr.remove(mantissaStr.length() - 1);
+    }
+    
+    formattedResult = mantissaStr + "x10^" + String(exponent);
+  } else {
+    // Normální formátování pro běžná čísla - pouze 2 desetinná místa místo 12
+    if (number == int(number)) {
+      formattedResult = String(int(number));
+    } else {
+      formattedResult = String(number, 2);  // Změna z 12 na 2 desetinná místa
+      
+      while (formattedResult.endsWith("0")) {
+        formattedResult.remove(formattedResult.length() - 1);
+      }
+      
+      if (formattedResult.endsWith(".")) {
+        formattedResult.remove(formattedResult.length() - 1);
+      }
+    }
+  }
+  
+  return formattedResult;
+}
+
+// Upravená funkce calculate_result pro nastavení kurzoru vždy na konec výrazu
+void calculate_result() {
+  if (expression.length() > 0) {
+    // Kontrola, zda ve výrazu nejsou prázdné symboly
+    if (hasEmptyMathSymbol(expression)) {
+      // Pokud jsou prázdné symboly, neprovedeme výpočet a zobrazíme chybu
+      Serial.println("Error: Empty SQRT or POW symbol");
+      expression = "Symbol Error";
+      symbolError = true;  // Nastavíme příznak chyby symbolu
+      cursorPosition = expression.length(); // Kurzor na konci chybové zprávy
+      displayScrollOffset = 0;
+      updateDisplay();
+      return;
+    }
+    
+    // Zapamatujeme si, zda jsme před výpočtem měli trigonometrický výsledek
+    bool wasTrigResult = trigResultActive;
+    double previousTrigResult = lastTrigResult;
+    
+    double result = eval(expression);
+    Serial.print(expression);
+    Serial.print(" = ");
+    Serial.println(result);
+
+    if (isnan(result)) {
+      expression = "NaN";
+      divisionByZeroError = true;
+      trigResultActive = false; // Resetujeme příznak trigonometrického výsledku
+      Serial.println("Division by zero error detected");
+      cursorPosition = expression.length(); // Kurzor na konci chybové zprávy "NaN"
+    } else {
+      // Pokud výpočet "zničil" příznak trigResultActive, obnovíme ho
+      if (wasTrigResult && !trigResultActive) {
+        trigResultActive = wasTrigResult;
+      }
+      
+      // Pokud je to výsledek z trigonometrické funkce, uložíme ho pro pozdější použití
+      if (trigResultActive) {
+        lastTrigResult = result;
+      }
+      
+      // Vždy formátujeme výsledek jako desetinné číslo pro uložení do expression
+      String formattedResult = formatLargeNumber(result);
+      
+      if (formattedResult.length() > MAX_EXPRESSION_LENGTH) {
+        largeResultError = true;
+      }
+      
+      expression = formattedResult;
+      
+      // Nastavíme příznak vědecké notace, pokud je výsledek v tomto formátu
+      if (expression.indexOf("x10^") != -1) {
+        isScientificMode = true;
+        // Uložení původního čísla před konverzí
+        originalNumber = String(result);
+      } else {
+        isScientificMode = false;
+        originalNumber = "";
+      }
+      
+      // Vždy nastavíme kurzor na konec výrazu, bez ohledu na typ formátu
+      cursorPosition = expression.length();
+    }
+    
+    displayScrollOffset = 0;
+    updateDisplay();
+  } else {
+    Serial.println("Error in calculation");
+    expression = "";
+    cursorPosition = 0;  // Na prázdném výrazu je kurzor na začátku
+    updateDisplay();
+  }
+}
+
+// Kompletně přepracovaná funkce eval pro lepší zpracování matematických výrazů
+double eval(String expr) {
+  if (expr.length() == 0) {
+    return 0.0;
+  }
+
+  // Nejdříve zpracujeme matematické funkce
+  processMathFunctions(expr);
+
+  // Nahrazení "pi" za jeho číselnou hodnotu s kontrolou, že se jedná o samostatný výraz
+  int piPos = 0;
+  while ((piPos = expr.indexOf("pi", piPos)) != -1) {
+    // Kontrola, zda před "pi" není číslo (což by naznačovalo násobení)
+    bool validPrefix = (piPos == 0) || !isDigit(expr.charAt(piPos - 1));
+    // Kontrola, zda za "pi" není číslo nebo písmeno (součást jiného výrazu)
+    bool validSuffix = (piPos + 2 >= expr.length()) || (!isDigit(expr.charAt(piPos + 2)) && !isalpha(expr.charAt(piPos + 2)));
+    
+    if (validPrefix && validSuffix) {
+      // Pokud je před "pi" číslo bez operátoru, přidáme operátor násobení
+      if (piPos > 0 && isDigit(expr.charAt(piPos - 1))) {
+        expr = expr.substring(0, piPos) + "*" + String(M_PI) + expr.substring(piPos + 2);
+        piPos += String(M_PI).length() + 1; // +1 pro '*'
+      } else {
+        expr = expr.substring(0, piPos) + String(M_PI) + expr.substring(piPos + 2);
+        piPos += String(M_PI).length();
+      }
+    } else {
+      piPos += 2; // Posun za "pi"
+    }
+  }
+  
+  // Nahrazení "e" za jeho číselnou hodnotu (Eulerovo číslo)
+  int ePos = 0;
+  while ((ePos = expr.indexOf("e", ePos)) != -1) {
+    // Kontrola, zda není 'e' součástí vědecké notace (např. 1.23e+5)
+    bool isScientific = (ePos > 0 && isDigit(expr.charAt(ePos - 1))) &&
+                        (ePos + 1 < expr.length() && (expr.charAt(ePos + 1) == '+' || expr.charAt(ePos + 1) == '-'));
+    
+    // Kontrola, zda před "e" není číslo (což by naznačovalo násobení)
+    bool validPrefix = (ePos == 0) || !isDigit(expr.charAt(ePos - 1));
+    // Kontrola, zda za "e" není číslo nebo písmeno (součást jiného výrazu)
+    bool validSuffix = (ePos + 1 >= expr.length()) || (!isDigit(expr.charAt(ePos + 1)) && !isalpha(expr.charAt(ePos + 1)));
+    
+    if (!isScientific && validPrefix && validSuffix) {
+      // Pokud je před "e" číslo bez operátoru, přidáme operátor násobení
+      if (ePos > 0 && isDigit(expr.charAt(ePos - 1))) {
+        expr = expr.substring(0, ePos) + "*" + String(M_E) + expr.substring(ePos + 1);
+        ePos += String(M_E).length() + 1; // +1 pro '*'
+      } else {
+        expr = expr.substring(0, ePos) + String(M_E) + expr.substring(ePos + 1);
+        ePos += String(M_E).length();
+      }
+    } else {
+      ePos += 1; // Posun za "e"
+    }
+  }
+
+  // Zpracování závorek - rekurzivně vyhodnocuje výrazy v závorkách
+  for (int i = 0; i < expr.length(); i++) {
+    if (expr.charAt(i) == '(') {
+      int depth = 1;
+      int j = i + 1;
+      while (j < expr.length() && depth > 0) {
+        if (expr.charAt(j) == '(') depth++;
+        if (expr.charAt(j) == ')') depth--;
+        j++;
+      }
+      
+      if (depth == 0) {
+        // Rekurzivní vyhodnocení výrazu v závorkách
+        double subResult = eval(expr.substring(i + 1, j - 1));
+        // Nahrazení výrazu v závorkách jeho hodnotou
+        String before = expr.substring(0, i);
+        String after = expr.substring(j);
+        expr = before + String(subResult) + after;
+        
+        // Posun indexu za nově vložený výsledek
+        i = before.length() + String(subResult).length() - 1;
+      }
+    }
+  }
+
+  // Nahrazení implicitního násobení (např. 2pi => 2*pi, 2(3+4) => 2*(3+4))
+  for (int i = 0; i < expr.length() - 1; i++) {
+    if (isDigit(expr.charAt(i)) && expr.charAt(i + 1) == '(') {
+      expr = expr.substring(0, i + 1) + "*" + expr.substring(i + 1);
+      i++; // Přeskočíme nově vložený operátor
+    }
+  }
+
+  // Vyhodnocení výrazu s operátory
+  double result = 0.0;
+  char operatorChar = '\0';
+  int lastPos = 0;
+  bool hasOperator = false;
+
+  // Nejprve provedeme operace s vyšší prioritou (* a /)
+  for (int pass = 0; pass < 2; pass++) {
+    String tempExpr = expr;
+    expr = "";
+    lastPos = 0;
+    operatorChar = '\0';
+    hasOperator = false;
+    
+    for (int i = 0; i < tempExpr.length(); i++) {
+      char c = tempExpr.charAt(i);
+      
+      // V prvním průchodu zpracováváme pouze * a /
+      // Ve druhém průchodu zpracováváme pouze + a -
+      if ((pass == 0 && (c == '*' || c == '/')) || 
+          (pass == 1 && (c == '+' || c == '-' && i > 0 && !isOperator(tempExpr.charAt(i-1))))) {
+        hasOperator = true;
+        double num = tempExpr.substring(lastPos, i).toDouble();
+        
+        if (operatorChar == '\0') {
+          result = num;
+        } else {
+          result = operate(result, num, operatorChar);
+          if (isnan(result)) {
+            return NAN;  // Propagujeme NaN dál
+          }
+        }
+        operatorChar = c;
+        lastPos = i + 1;
+      }
+    }
+    
+    if (hasOperator) {
+      double lastNum = tempExpr.substring(lastPos).toDouble();
+      if (operatorChar != '\0') {
+        result = operate(result, lastNum, operatorChar);
+        expr = String(result);
+      } else {
+        expr = tempExpr;
+      }
+    } else {
+      expr = tempExpr;
+    }
+  }
+
+  // Pokud nebyl nalezen žádný operátor, vrátíme přímo hodnotu výrazu
+  if (expr.length() > 0 && !hasOperator) {
+    return expr.toDouble();
+  }
+
+  return result;
+}
+
+// Pomocná funkce pro kontrolu, zda je znak operátor
+bool isOperator(char c) {
+  return c == '+' || c == '-' || c == '*' || c == '/';
+}
+
+void processMathFunctions(String &expr) {
+  // Nejdříve zkontrolujeme, zda ve výrazu nejsou vnořené funkce SQRT a POW
+  if (hasEmptyMathSymbol(expr)) {
+    expr = "NaN";
+    return;
+  }
+
+  // Nejdříve zpracujeme SQRT samostatně, protože se chová jinak než ostatní funkce
+  int sqrtPos = 0;
+  while ((sqrtPos = expr.indexOf("SQRT", sqrtPos)) != -1) {
+    // Kontrola, zda je SQRT samostatné (ne součást jiného slova)
+    bool isStandalone = true;
+    if (sqrtPos > 0) {
+      char prevChar = expr.charAt(sqrtPos - 1);
+      if (isalpha(prevChar) || isdigit(prevChar)) {
+        isStandalone = false;
+      }
+    }
+    
+    if (isStandalone) {
+      // Kontrola, zda není prázdný argument SQRT
+      if (sqrtPos + 4 >= expr.length() || 
+          isOperator(expr.charAt(sqrtPos + 4)) || 
+          expr.charAt(sqrtPos + 4) == ')') {
+        // SQRT s prázdným argumentem
+        expr = "NaN";
+        return;
+      }
+      
+      // Najdeme konec výrazu, který je argumentem SQRT
+      int startPos = sqrtPos + 4; // Posuneme se za "SQRT"
+      int endPos = expr.length();
+      
+      // Najdeme konec výrazu (další operátor nebo konec řetězce)
+      for (int i = startPos; i < expr.length(); i++) {
+        char c = expr.charAt(i);
+        if (isOperator(c) || c == ')') {
+          endPos = i;
+          break;
+        }
+      }
+      
+      // Získáme argument SQRT
+      String argExpr = expr.substring(startPos, endPos);
+      
+      // Pokud je argument prázdný, přerušíme zpracování (chyba)
+      if (argExpr.length() == 0) {
+        expr = "NaN";
+        return;
+      }
+      
+      // Kontrola, zda argument neobsahuje další SQRT nebo POW
+      if (argExpr.indexOf("SQRT") != -1 || argExpr.indexOf("POW") != -1) {
+        expr = "NaN";
+        return;
+      }
+      
+      // Vyhodnotíme argument
+      double argValue = eval(argExpr);
+      
+      // Vypočítáme odmocninu
+      if (argValue >= 0) {
+        double result = calculateSqrt(argValue);
+        
+        // Nahradíme SQRT + argument výsledkem
+        expr = expr.substring(0, sqrtPos) + String(result) + expr.substring(endPos);
+        
+        // Resetujeme hledání
+        sqrtPos = 0;
+      } else {
+        // Odmocnina ze záporného čísla
+        expr = "NaN";
+        return;
+      }
+    } else {
+      // Není samostatné SQRT - posuneme se dál
+      sqrtPos++;
+    }
+  }
+  
+  // Pole známých matematických funkcí
+  const char* functions[] = {"sin", "cos", "tan", "asin", "acos", "atan", "log", "ln"};
+  const int numFunctions = 8; // SQRT už jsme zpracovali
+  
+  // Resetujeme flag trigonometrické funkce
+  trigResultActive = false;
+  
+  // Zpracování funkcí (sin, cos, atd.)
+  for (int funcIdx = 0; funcIdx < numFunctions; funcIdx++) {
+    String func = functions[funcIdx];
+    int funcPos = 0;
+    
+    while ((funcPos = expr.indexOf(func, funcPos)) != -1) {
+      // Zkontrolujeme, zda je to samostatná funkce (ne součást jiného slova)
+      bool isStandalone = true;
+      if (funcPos > 0) {
+        char prevChar = expr.charAt(funcPos - 1);
+        if (isalpha(prevChar) || isdigit(prevChar)) {
+          isStandalone = false;
+        }
+      }
+      
+      if (isStandalone) {
+        // Najdeme závorku začínající argument
+        int openBracket = expr.indexOf("(", funcPos);
+        
+        if (openBracket != -1 && openBracket == funcPos + func.length()) {
+          // Najdeme odpovídající uzavírací závorku
+          int depth = 1;
+          int closeBracket = openBracket + 1;
+          
+          while (closeBracket < expr.length() && depth > 0) {
+            if (expr.charAt(closeBracket) == '(') depth++;
+            if (expr.charAt(closeBracket) == ')') depth--;
+            closeBracket++;
+          }
+          
+          if (depth == 0) {
+            // Vyhodnotíme argument funkce
+            String argExpr = expr.substring(openBracket + 1, closeBracket - 1);
+            
+            // Kontrola, zda argument není prázdný
+            if (argExpr.length() == 0) {
+              expr = "NaN";
+              return;
+            }
+            
+            // Rekurzivní vyhodnocení argumentu
+            double argValue = 0.0;
+            
+            // Pro větší přesnost nejprve vyhodnotíme argument
+            argValue = eval(argExpr);
+            
+            Serial.print("Function: ");
+            Serial.print(func);
+            Serial.print(", Argument: ");
+            Serial.print(argExpr);
+            Serial.print(", Value: ");
+            Serial.println(argValue);
+            
+            // Aplikujeme příslušnou funkci
+            double result = 0.0;
+            bool validResult = true;
+            bool isTrigFunction = false;
+            
+            if (func == "sin") {
+              // Převod stupňů na radiány, pokud je třeba
+              double angleVal = isRadianMode ? argValue : (argValue * PI / 180.0);
+              result = sin(angleVal);
+              isTrigFunction = true;
+              Serial.print("sin(");
+              Serial.print(angleVal);
+              Serial.print(") = ");
+              Serial.println(result);
+            } else if (func == "cos") {
+              double angleVal = isRadianMode ? argValue : (argValue * PI / 180.0);
+              result = cos(angleVal);
+              isTrigFunction = true;
+              Serial.print("cos(");
+              Serial.print(angleVal);
+              Serial.print(") = ");
+              Serial.println(result);
+            } else if (func == "tan") {
+              double angleVal = isRadianMode ? argValue : (argValue * PI / 180.0);
+              result = tan(angleVal);
+              isTrigFunction = true;
+            } else if (func == "asin") {
+              if (argValue >= -1.0 && argValue <= 1.0) {
+                result = asin(argValue);
+                // Převod radiánů zpět na stupně, pokud je třeba
+                if (!isRadianMode) {
+                  result = result * 180.0 / PI;
+                }
+                isTrigFunction = true;
+              } else {
+                validResult = false;
+              }
+            } else if (func == "acos") {
+              if (argValue >= -1.0 && argValue <= 1.0) {
+                result = acos(argValue);
+                if (!isRadianMode) {
+                  result = result * 180.0 / PI;
+                }
+                isTrigFunction = true;
+              } else {
+                validResult = false;
+              }
+            } else if (func == "atan") {
+              result = atan(argValue);
+              if (!isRadianMode) {
+                result = result * 180.0 / PI;
+              }
+              isTrigFunction = true;
+            } else if (func == "log") {
+              if (argValue > 0) {
+                result = log10(argValue);
+              } else {
+                validResult = false;
+              }
+            } else if (func == "ln") {
+              if (argValue > 0) {
+                result = log(argValue);
+              } else {
+                validResult = false;
+              }
+            }
+            
+            // Pokud je to trigonometrická funkce a ve stupních, nastavíme flag
+            if (isTrigFunction && !isRadianMode) {
+              trigResultActive = true;
+              lastTrigResult = result;
+            }
+            
+            // Nahradíme funkci výsledkem
+            if (validResult) {
+              expr = expr.substring(0, funcPos) + String(result) + expr.substring(closeBracket);
+              // Resetujeme vyhledávání od začátku
+              funcPos = 0;
+            } else {
+              // V případě neplatného výsledku vrátíme NaN
+              expr = "NaN";
+              return;
+            }
+          } else {
+            // Neuzavřená závorka - posuneme se dál
+            funcPos += func.length();
+          }
+        } else {
+          // Nebyla nalezena závorka - posuneme se dál
+          funcPos += func.length();
+        }
+      } else {
+        // Není samostatná funkce - posuneme se dál
+        funcPos += 1;
+      }
+    }
+  }
+  
+  // Zpracování POW (druhá mocnina)
+  // POW má vyšší prioritu než běžné operátory, takže ji zpracujeme před nimi
+  int powPos = 0;
+  while ((powPos = expr.indexOf("POW", powPos)) != -1) {
+    // Kontrola, zda je POW samostatné (není součástí jiného slova)
+    bool isStandalone = true;
+    if (powPos > 0) {
+      char prevChar = expr.charAt(powPos - 1);
+      if (isalpha(prevChar)) {
+        isStandalone = false;
+      }
+    }
+    
+    if (isStandalone) {
+      // Kontrola, zda před POW je platný argument
+      if (powPos == 0 || isOperator(expr.charAt(powPos - 1)) || expr.charAt(powPos - 1) == '(') {
+        // POW bez argumentu
+        expr = "NaN";
+        return;
+      }
+      
+      // Hledáme výraz před POW
+      int startPos = powPos - 1;
+      
+      // Najdeme začátek výrazu před POW
+      while (startPos >= 0) {
+        char c = expr.charAt(startPos);
+        
+        // Pokud narazíme na operátor nebo začátek výrazu, přerušíme
+        if (isOperator(c) || c == '(' || startPos == 0) {
+          if (isOperator(c) || c == '(') {
+            startPos++; // Přeskočíme operátor
+          }
+          break;
+        }
+        
+        startPos--;
+      }
+      
+      if (startPos >= 0 && startPos < powPos) {
+        String numExpr = expr.substring(startPos, powPos);
+        
+        // Kontrola, zda argument neobsahuje SQRT nebo POW
+        if (numExpr.indexOf("SQRT") != -1 || numExpr.indexOf("POW") != -1) {
+          expr = "NaN";
+          return;
+        }
+        
+        if (numExpr.length() > 0) {
+          // Vyhodnotíme výraz před POW
+          double numValue = eval(numExpr);
+          
+          // Vypočítáme druhou mocninu
+          double result = calculateSquared(numValue);
+          
+          // Nahradíme výraz výsledkem
+          expr = expr.substring(0, startPos) + String(result) + expr.substring(powPos + 3);
+          
+          // Resetujeme vyhledávání
+          powPos = 0;
+        } else {
+          // Pokud není před POW žádný výraz, považujeme to za chybu
+          expr = "NaN";
+          return;
+        }
+      } else {
+        // Pokud není před POW žádný platný výraz, považujeme to za chybu
+        expr = "NaN";
+        return;
+      }
+    } else {
+      // Není samostatné POW - posuneme se dál
+      powPos += 1;
+    }
+  }
+}
+
+// Provádí základní matematické operace (+, -, *, /) mezi dvěma čísly
+double operate(double a, double b, char op) {
+  switch (op) {
+    case '+': return a + b;
+    case '-': return a - b;
+    case '*': return a * b;
+    case '/': 
+      if (b != 0) {
+        return a / b;
+      } else {
+        Serial.println("Error: Division by zero");
+        return NAN;
+      }
+    default: return b;
+  }
+}
+
+// Upravená funkce convertToDMS, která vrací jednotlivé složky pro pozdější vykreslení
+void getDMSComponents(double decimalDegrees, int &degrees, int &minutes, int &seconds, bool &isNegative) {
+  isNegative = (decimalDegrees < 0);
+  double absValue = abs(decimalDegrees);
+  
+  // Výpočet stupňů (celá část)
+  degrees = (int)absValue;
+  
+  // Výpočet minut
+  double minutesDecimal = (absValue - degrees) * 60;
+  minutes = (int)minutesDecimal;
+  
+  // Výpočet vteřin
+  double secondsDecimal = (minutesDecimal - minutes) * 60;
+  seconds = round(secondsDecimal);
+  
+  // Kontrola přetečení
+  if (seconds >= 60) {
+    seconds = 0;
+    minutes++;
+  }
+  if (minutes >= 60) {
+    minutes = 0;
+    degrees++;
+  }
+}
+
+// ALTERNATIVA 2: Funkce pro kreslení vlastního symbolu stupně na displeji
+void drawDMSResult(const String &dmsText) {
+  // Rozparsování DMS textu
+  int dPos = dmsText.indexOf('d');
+  int mPos = dmsText.indexOf('m');
+  int sPos = dmsText.indexOf('s');
+  
+  if (dPos == -1 || mPos == -1 || sPos == -1) {
+    // Pokud nemá správný formát, zobrazíme jako běžný text
+    display.drawStr(-displayScrollOffset, 20, dmsText.c_str());
+    return;
+  }
+  
+  // Získání jednotlivých částí
+  String degPart = dmsText.substring(0, dPos);
+  String minPart = dmsText.substring(dPos+1, mPos);
+  String secPart = dmsText.substring(mPos+1, sPos);
+  
+  // Vykreslení textu po částech
+  int xPos = -displayScrollOffset;
+  
+  // Stupně
+  display.drawStr(xPos, 20, degPart.c_str());
+  xPos += display.getStrWidth(degPart.c_str());
+  
+  // Symbol stupně - kreslíme jako malý kroužek
+  display.drawCircle(xPos + 6, 10, 2);
+  xPos += 12;
+  
+  // Minuty
+  display.drawStr(xPos, 20, minPart.c_str());
+  xPos += display.getStrWidth(minPart.c_str());
+  
+  // Symbol minuty - kreslíme jako apostrof
+  display.drawLine(xPos + 3, 8, xPos + 5, 12);
+  xPos += 8;
+  
+  // Vteřiny
+  display.drawStr(xPos, 20, secPart.c_str());
+  xPos += display.getStrWidth(secPart.c_str());
+  
+  // Symbol vteřiny - dva apostrofy
+  display.drawLine(xPos + 3, 8, xPos + 5, 12);
+  display.drawLine(xPos + 6, 8, xPos + 8, 12);
+}
+
+// Přidejte tuto implementaci funkce convertToDMS do vašeho kódu
+String convertToDMS(double decimalDegrees) {
+  int degrees, minutes, seconds;
+  bool isNegative;
+  
+  // Použijeme existující funkci pro získání komponent
+  getDMSComponents(decimalDegrees, degrees, minutes, seconds, isNegative);
+  
+  // Sestavení řetězce s textovým označením stupňů, minut a vteřin
+  String result = isNegative ? "-" : "";
+  result += String(degrees) + "d " + String(minutes) + "m " + String(seconds) + "s";
+  
+  return result;
+}
+
+// Symbol odmocniny umístěný pouze v prvním řádku se strmější šikmou čarou
+void drawSquareRootSymbol(int x, int y, int height) {
+  // Výška řezu je hodnota, kterou můžete upravit pro lepší vzhled
+  int reservedHeight = height;
+  
+  // Šířka celého symbolu
+  int symbolWidth = height * 0.7;
+  
+  // Posunutí všech bodů nahoru, aby byl symbol pouze nad základní čarou
+  int verticalOffset = reservedHeight/3;  // Posunutí nahoru
+  
+  // Bod 3: Spodní bod svislé čáry - nad základní čárou
+  int x3 = x;
+  int y3 = y - verticalOffset;
+  
+  // Bod 4: Nejnižší bod "zubu" - na základní čáře
+  int x4 = x + symbolWidth * 0.3;
+  int y4 = y;
+  
+  // Bod 5: Konec symbolu (vpravo) - upraven pro strmější šikmou čáru
+  int x5 = x + symbolWidth;
+  // Zvětšíme svislou vzdálenost pro strmější čáru (zvýšíme o 50%)
+  int y5 = y - reservedHeight/2 - verticalOffset;  // Strmější úhel
+  
+  // Vykreslení symbolu jako série čar
+  display.drawLine(x3, y3, x4, y4);  // Šikmá čára do "zubu"
+  display.drawLine(x4, y4, x5, y5);  // Strmější šikmá čára vzhůru vpravo
+}
+
+// Funkce pro získání celkové šířky symbolu odmocniny
+int getSquareRootSymbolWidth(int height) {
+  return height * 0.7;  // Šířka symbolu je 70% výšky
+}
+
+// Funkce pro vykreslení znaku druhé mocniny (x²) - posunuta výš
+void drawSquaredSymbol(int x, int y, int height) {
+  // Parametry pro velikost symbolu
+  int width = height * 0.5;  // Šířka je 50% výšky
+  int yOffset = height * 0.5;  // Zvětšeno z 0.3 na 0.5 pro větší posun nahoru
+  
+  // Vykreslení znaku "²"
+  display.setFont(u8g2_font_ncenB08_tr);  // Menší font pro horní index
+  display.drawStr(x, y - yOffset, "2");  // Posunuto výš o větší offset
+  display.setFont(u8g2_font_ncenB14_tr);  // Návrat k původnímu fontu
+}
+
+// Funkce pro získání celkové šířky symbolu druhé mocniny
+int getSquaredSymbolWidth(int height) {
+  // Šířka je přibližně 50% výšky (pro digit 2 v horním indexu)
+  return height * 0.5;
+}
+
+// Pomocná funkce pro nahrazení "SQRT" a "POW" vlastními symboly
+String replaceMathSymbols(const String &expr, int cursorPos, int &newCursorPos) {
+  newCursorPos = cursorPos;
+  String result = "";
+  int pos = 0;
+  
+  while (pos < expr.length()) {
+    // Hledání "SQRT" a "POW" v textu
+    int sqrtPos = expr.indexOf("SQRT", pos);
+    int powPos = expr.indexOf("POW", pos);
+    
+    // Zjistit, který symbol je blíže (nebo neexistuje)
+    int nextPos = -1;
+    char symbolType = '\0';
+    
+    if (sqrtPos != -1 && (powPos == -1 || sqrtPos < powPos)) {
+      nextPos = sqrtPos;
+      symbolType = 'R';  // R jako Root (odmocnina)
+    } else if (powPos != -1) {
+      nextPos = powPos;
+      symbolType = 'P';  // P jako Power (druhá mocnina)
+    }
+    
+    if (nextPos == -1) {
+      // Žádné další symboly nebyly nalezeny, přidáme zbytek textu
+      result += expr.substring(pos);
+      break;
+    }
+    
+    // Přidáme text před symbolem
+    result += expr.substring(pos, nextPos);
+    
+    if (symbolType == 'R') {
+      // Přidáme speciální značku pro odmocninu (např. "√")
+      result += "√";
+      
+      // Upravíme pozici kurzoru, pokud je za nebo v "SQRT"
+      if (cursorPos > nextPos + 4) {
+        newCursorPos -= 3;  // Zkrácení o 3 (SQRT -> √)
+      } else if (cursorPos > nextPos && cursorPos <= nextPos + 4) {
+        newCursorPos = nextPos + 1;  // Umístíme kurzor za symbol √
+      }
+      
+      // Posun pozice za "SQRT"
+      pos = nextPos + 4;
+    } else if (symbolType == 'P') {
+      // Přidáme speciální značku pro druhou mocninu (např. "^")
+      result += "^";
+      
+      // Upravíme pozici kurzoru, pokud je za nebo v "POW"
+      if (cursorPos > nextPos + 3) {
+        newCursorPos -= 2;  // Zkrácení o 2 (POW -> ^)
+      } else if (cursorPos > nextPos && cursorPos <= nextPos + 3) {
+        newCursorPos = nextPos + 1;  // Umístíme kurzor za symbol ^
+      }
+      
+      // Posun pozice za "POW"
+      pos = nextPos + 3;
+    }
+  }
+  
+  return result;
+}
+
+// Funkce pro výpočet odmocniny
+double calculateSqrt(double value) {
+  if (value < 0) {
+    // Odmocnina ze záporného čísla je NaN
+    return NAN;
+  }
+  return sqrt(value);
+}
+
+// Funkce pro výpočet druhé mocniny
+double calculateSquared(double value) {
+  return value * value;
+}
+
+// Modify the hasEmptyMathSymbol function to detect nested SQRT and POW
+bool hasEmptyMathSymbol(const String &expr) {
+  int pos = 0;
+  
+  // Kontrola prázdných SQRT
+  while (true) {
+    int sqrtPos = expr.indexOf("SQRT", pos);
+    if (sqrtPos == -1) break; // Žádný další výskyt SQRT
+    
+    // Kontrola, zda je něco za SQRT
+    if (sqrtPos + 4 >= expr.length()) {
+      // SQRT je na konci výrazu, takže je prázdný
+      return true;
+    }
+    
+    // Kontrola, zda za SQRT je operátor, což by znamenalo prázdný argument
+    char nextChar = expr.charAt(sqrtPos + 4);
+    if (isOperator(nextChar) || nextChar == ')') {
+      return true;
+    }
+    
+    // Nová kontrola: zjistit, zda za SQRT následuje další SQRT nebo POW
+    if (sqrtPos + 8 < expr.length() && 
+        expr.substring(sqrtPos + 4, sqrtPos + 8) == "SQRT") {
+      return true; // Nalezen vnořený SQRT
+    }
+    
+    if (sqrtPos + 7 < expr.length() && 
+        expr.substring(sqrtPos + 4, sqrtPos + 7) == "POW") {
+      return true; // Nalezen POW ihned za SQRT
+    }
+    
+    pos = sqrtPos + 4; // Posun za SQRT
+  }
+  
+  // Kontrola prázdných POW
+  pos = 0;
+  while (true) {
+    int powPos = expr.indexOf("POW", pos);
+    if (powPos == -1) break; // Žádný další výskyt POW
+    
+    // Kontrola, zda je něco před POW
+    if (powPos == 0) {
+      // POW je na začátku výrazu, takže je prázdný
+      return true;
+    }
+    
+    // Kontrola, zda před POW je operátor, což by znamenalo prázdný argument
+    char prevChar = expr.charAt(powPos - 1);
+    if (isOperator(prevChar) || prevChar == '(') {
+      return true;
+    }
+    
+    // Nová kontrola: Zkontrolujeme, zda před POW je SQRT nebo jiný POW
+    // Nejprve hledáme nejbližší SQRT před POW
+    int prevSqrtPos = expr.lastIndexOf("SQRT", powPos);
+    if (prevSqrtPos != -1 && prevSqrtPos + 4 == powPos) {
+      return true; // POW je hned za SQRT
+    }
+    
+    // Hledáme nejbližší POW před aktuálním POW
+    int prevPowPos = expr.lastIndexOf("POW", powPos - 1);
+    if (prevPowPos != -1 && prevPowPos + 3 == powPos) {
+      return true; // POW je hned za jiným POW
+    }
+    
+    pos = powPos + 3; // Posun za POW
+  }
+  
+  return false; // Žádný prázdný symbol nebyl nalezen
+}
